@@ -5,14 +5,11 @@ void handle_arp(struct ether_hdr *ether_header, struct arp_hdr *arp_header,
     struct arp_table_entry *arp_table, int *arp_table_len,
     struct route_table_entry *routing_table, int routing_table_len,
     struct queue *q) {
-	FILE *file = fopen("routerOutputARP", "w");
 
     // check if this is an arp request
     if (ntohs(arp_header->opcode) == ARP_REQUEST) {
         // see if the router's ip is the one it is looking for
         if (arp_header->tprotoa == inet_addr(get_interface_ipv4(interface))) {
-            fprintf(file, "REPLYING TO ARP REQUEST\n");
-            fflush(file);
             // reply to request with router's mac
             // STEP 1: update ether header
             memcpy(ether_header->ethr_dhost, ether_header->ethr_shost, 6);
@@ -42,8 +39,7 @@ void handle_arp(struct ether_hdr *ether_header, struct arp_hdr *arp_header,
         if (arp_header->tprotoa == inet_addr(get_interface_ipv4(interface))) {
             // good, now the router knows the sender's MAC
             // cache it
-            (*arp_table_len)++;
-            int index = *arp_table_len;
+            int index = (*arp_table_len)++;
             arp_table[index].ip = arp_header->sprotoa;
             memcpy(arp_table[index].mac, arp_header->shwa, 6);
 
