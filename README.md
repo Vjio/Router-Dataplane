@@ -1,64 +1,88 @@
 # Router Dataplane
 
-A software implementation of an IPv4 router's forwarding (data) plane in C. The router reads a static routing table, performs longest-prefix-match lookups, handles Ethernet/ARP resolution, and correctly manages IPv4-layer details like checksums, TTL, and ICMP error/reply generation — the same logic a real router's fast path is responsible for.
+A software IPv4 router data plane in C. It forwards packets using longest-prefix-match lookup over a sorted routing table (binary search), resolves next hops via ARP with a pending-packet queue, and generates ICMP replies and errors, covering the logic a real router's fast path handles.
 
-Built as part of a computer networking / protocols coursework assignment.
+Developed for a computer networking course; the virtual topology and checker are provided by the course, and the forwarding logic is my own implementation.
 
-## What it does
+## Features
 
-On every incoming packet, the router:
+- Ethernet frame parsing and destination-MAC filtering (own interface or broadcast)
+- IPv4 header checksum verification, TTL decrement and checksum update
+- **Longest-prefix-match routing in O(log n)** using binary search
+- ARP request/reply handling, ARP cache, and a queue for packets awaiting resolution
+- ICMP echo reply, Time Exceeded, and Destination Unreachable
 
-1. **Parses the Ethernet frame** and checks the destination MAC address (accepts frames addressed to the router's own interface or broadcast, drops everything else).
-2. **Dispatches by EtherType** to the IPv4 or ARP handler (an IPv6 stub is present but not yet implemented).
-3. **For IPv4 packets:**
-   - Verifies the header checksum and drops the packet on mismatch.
-   - If the router itself is the destination, replies to ICMP echo requests.
-   - Otherwise, checks and decrements TTL, sending an ICMP Time Exceeded reply if TTL has expired.
-   - Recomputes the header checksum after modifying TTL.
-   - Looks up the destination in the routing table using **longest prefix match**; sends an ICMP Destination Unreachable reply if no route exists.
-   - Resolves the next hop's MAC address via the ARP cache. On a cache miss, the packet is queued and an ARP request is sent; queued packets are flushed once the reply arrives.
-   - Rewrites the Ethernet header (source/destination MAC) and forwards the packet out the correct interface.
-4. **For ARP packets:** handles incoming ARP requests/replies, maintains the ARP table, and sends outgoing ARP requests for unresolved next hops.
+## Packet pipeline
 
-## Building
+1. **Ethernet:** accept frames addressed to the router or broadcast; drop the rest.
+2. **Dispatch** by EtherType to the IPv4 or ARP handler (IPv6 stub present, not implemented).
+3. **IPv4:**
+   - Verify the header checksum; drop on mismatch.
+   - If addressed to the router, reply to ICMP echo requests.
+   - Otherwise check TTL; send ICMP Time Exceeded if it expired, else decrement it and recompute the checksum.
+   - Look up the next hop (see below); send ICMP Destination Unreachable if there is no route.
+   - Resolve the next-hop MAC via the ARP cache. On a miss, queue the packet and send an ARP request.
+   - Rewrite the Ethernet header and forward out the correct interface.
+4. **ARP:** update the cache on replies, answer requests for the router's own addresses, and flush queued packets once a reply arrives.
+
+## Design notes
+
+### Longest prefix match
+
+The routing table is loaded once at startup and **sorted by [prefix, then mask length]**. Each lookup uses **binary search** to find the candidate entries for the destination address and picks the one with the longest matching mask.
+
+| | Linear scan | This implementation |
+|---|---|---|
+| Lookup | O(n) | O(log n) [+ scan over equal-prefix entries] |
+| Setup | none | O(n log n) sort at startup |
+
+The trade-off is that the table is static. Supporting dynamic updates would need re-sorting or a different structure such as a binary trie.
+
+### ARP and pending packets
+
+Resolved next hops are cached in a flat array of (IP, MAC) entries, which is filled when ARP replies arrive.
+
+When the next hop's MAC isn't cached, the packet is copied into a FIFO queue and a broadcast ARP request is sent out the egress interface. When a reply arrives, the router caches the sender's MAC, then drains the queue: each packet's next hop is recomputed with the LPM lookup, packets waiting on the newly resolved address get their destination MAC filled in and are forwarded, and the rest are put back in their original order.
+
+### Checksum
+
+The IPv4 header checksum is verified on every incoming packet. After the TTL is decremented, the checksum is zeroed and recomputed over the full 20-byte header.
+
+## Project structure
+
+| File | Responsibility |
+|---|---|
+| `router.c` | Main loop, Ethernet handling, dispatch |
+| `ipv4.c` | IPv4 validation, TTL/checksum, forwarding, LPM lookup |
+| `icmp.c` | ICMP echo reply, Time Exceeded, Destination Unreachable |
+| `arp.c` | ARP cache, requests/replies, pending-packet queue |
+| `lib/` | Course-provided support library (raw socket I/O, headers) |
+
+## Requirements
+
+- Linux, `gcc`, `make`
+- Mininet and Python 3
+
+## Building and running
 
 ```bash
 make
-```
-
-This compiles `router.c`, `ipv4.c`, `icmp.c`, `arp.c`, and the support library in `lib/` into a single `router` binary.
-
-## Running
-
-The router binary expects a routing table file followed by a list of interface names:
-
-```bash
 ./router <rtable_file> <interface_0> <interface_1> ...
 ```
 
-Convenience targets are provided for the two-router topology used in testing:
+Convenience targets for the two-router test topology:
 
 ```bash
-make run_router0   # builds and runs with rtable0.txt
-make run_router1   # builds and runs with rtable1.txt
+make run_router0   # runs with rtable0.txt
+make run_router1   # runs with rtable1.txt
 ```
 
-These are meant to be run inside the virtual network topology set up by the checker (see below) — the interface names correspond to virtual links between routers/hosts, not physical NICs.
+These run inside the virtual topology set up by the checker. The interface names correspond to virtual links.
 
 ## Testing
-
-A checker script (written by the PCOM team) is provided to validate the implementation against expected behavior:
 
 ```bash
 ./checker/checker.sh
 ```
 
-## Status / roadmap
-
-- [x] IPv4 forwarding with longest prefix match
-- [x] TTL handling and checksum validation
-- [x] ICMP echo reply, time exceeded, destination unreachable
-- [x] ARP request/reply handling with a pending-packet queue
-- [ ] IPv6 support
-- [ ] VLAN tagging
-- [ ] Dynamic routing (e.g. RIP/OSPF-style updates instead of a static table)
+The course provided checker covers [forwarding, ARP, ICMP echo, TTL expiry, unreachable destinations].
